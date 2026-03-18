@@ -8,8 +8,19 @@ struct MainView: View {
     
     @State private var speechManager = SpeechManager()
     @State private var mimuEngine = MimuEngine()
-    
+
     @State private var showParticles: Bool = false
+    @State private var pillLaunching: Bool = false   // text-to-particles launch state
+
+    // Deferred insertion — stored until particles finish
+    @State private var pendingTaskTitle: String?
+    @State private var pendingEventTitle: String?
+    @State private var pendingEventDate: Date?
+
+    // Highlight glow for newly added row
+    @State private var latestTaskId: UUID?
+    @State private var latestEventId: UUID?
+    @State private var highlightOpacity: Double = 0
 
     var body: some View {
         NavigationStack {
@@ -25,6 +36,11 @@ struct MainView: View {
                             VStack(spacing: 12) {
                                 ForEach(tasks) { task in
                                     taskRow(task)
+                                        .transition(.asymmetric(
+                                            insertion: .scale(scale: 0.88, anchor: .top)
+                                                .combined(with: .opacity),
+                                            removal: .opacity.combined(with: .scale(scale: 0.92))
+                                        ))
                                 }
                             }
                         }
@@ -37,6 +53,11 @@ struct MainView: View {
                             VStack(spacing: 12) {
                                 ForEach(events) { event in
                                     eventRow(event)
+                                        .transition(.asymmetric(
+                                            insertion: .scale(scale: 0.88, anchor: .top)
+                                                .combined(with: .opacity),
+                                            removal: .opacity.combined(with: .scale(scale: 0.92))
+                                        ))
                                 }
                             }
                         }
@@ -58,10 +79,36 @@ struct MainView: View {
                 // Apple Pay beam animation — sits on top of everything
                 if showParticles {
                     ApplePayBeamView {
+                        pillLaunching = false   // restore pill to normal state
+                        // Insert the item now so it animates in after particles clear
+                        if let title = pendingTaskTitle {
+                            let task = AppTask(title: title)
+                            withAnimation(.spring(response: 0.52, dampingFraction: 0.76)) {
+                                modelContext.insert(task)
+                            }
+                            latestTaskId = task.id
+                            pendingTaskTitle = nil
+                        } else if let title = pendingEventTitle, let date = pendingEventDate {
+                            let event = AppEvent(title: title, date: date)
+                            withAnimation(.spring(response: 0.52, dampingFraction: 0.76)) {
+                                modelContext.insert(event)
+                            }
+                            latestEventId = event.id
+                            pendingEventTitle = nil
+                            pendingEventDate = nil
+                        }
                         showParticles = false
+                        // Glow highlight on the new row
+                        withAnimation(.easeOut(duration: 0.35)) { highlightOpacity = 1.0 }
+                        withAnimation(.easeOut(duration: 1.2).delay(0.35)) { highlightOpacity = 0 }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            latestTaskId = nil
+                            latestEventId = nil
+                        }
                     }
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
             }
         }
@@ -115,6 +162,22 @@ struct MainView: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 8, y: 4)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.40, green: 0.70, blue: 1.00)
+                                .opacity(task.id == latestTaskId ? highlightOpacity : 0),
+                            Color(red: 0.60, green: 0.38, blue: 1.00)
+                                .opacity(task.id == latestTaskId ? highlightOpacity : 0)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.8
+                )
+        )
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
                 withAnimation { modelContext.delete(task) }
@@ -123,7 +186,7 @@ struct MainView: View {
             }
         }
     }
-    
+
     private func eventRow(_ event: AppEvent) -> some View {
         HStack(spacing: 16) {
             ZStack {
@@ -169,6 +232,22 @@ struct MainView: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 8, y: 4)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.30, green: 0.60, blue: 1.00)
+                                .opacity(event.id == latestEventId ? highlightOpacity : 0),
+                            Color(red: 0.50, green: 0.35, blue: 1.00)
+                                .opacity(event.id == latestEventId ? highlightOpacity : 0)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.8
+                )
+        )
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
                 withAnimation { modelContext.delete(event) }
@@ -177,7 +256,7 @@ struct MainView: View {
             }
         }
     }
-    
+
     private var emptyStateView: some View {
         VStack(spacing: 16) {
             Image(systemName: "mic.fill")
@@ -223,6 +302,11 @@ struct MainView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(2)
                 .animation(.easeInOut(duration: 0.2), value: speechManager.transcribedText)
+                // Text compresses toward the send button and dissolves as particles launch
+                .scaleEffect(pillLaunching ? 0.01 : 1.0, anchor: .trailing)
+                .offset(x: pillLaunching ? 40 : 0, y: pillLaunching ? -8 : 0)
+                .opacity(pillLaunching ? 0 : 1.0)
+                .animation(.easeIn(duration: 0.14), value: pillLaunching)
 
             // Right: mic to start recording, send button to submit
             Button(action: handleRecordingTap) {
@@ -260,15 +344,21 @@ struct MainView: View {
             let captured = speechManager.transcribedText
             guard !captured.trimmingCharacters(in: .whitespaces).isEmpty else { return }
 
-            // ── Process intent IMMEDIATELY (before animation starts) ──
-            // By the time 1 second of particles finishes, the item is already in SwiftData
+            // ── Store intent — insertion deferred until particles finish ──
             let intent = mimuEngine.parseIntent(from: captured)
             switch intent {
             case .task(let title):
-                modelContext.insert(AppTask(title: title))
+                pendingTaskTitle  = title
+                pendingEventTitle = nil
+                pendingEventDate  = nil
             case .event(let title, let date):
-                modelContext.insert(AppEvent(title: title, date: date))
+                pendingTaskTitle  = nil
+                pendingEventTitle = title
+                pendingEventDate  = date
             }
+
+            // ── Text-to-particles: collapse pill text first ──
+            pillLaunching = true
             speechManager.transcribedText = ""
 
             // ── Haptics ──
@@ -276,13 +366,14 @@ struct MainView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
-            // Success haptic fires as particles arrive
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.95) {
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
 
-            // ── Fire particle animation ──
-            showParticles = true
+            // ── Fire particle animation after text collapse ──
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {
+                showParticles = true
+            }
 
         } else {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()

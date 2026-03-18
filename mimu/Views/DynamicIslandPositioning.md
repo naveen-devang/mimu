@@ -20,6 +20,11 @@ The Dynamic Island position varies slightly across iPhone models, but follows a 
 - Dynamic Island center: ~37pt from physical top
 - Ratio: 37 / 59 ≈ 0.627
 
+### iPhone 17 (confirmed on device)
+- Safe area top: 62pt
+- Dynamic Island center: ~38.9pt from physical top
+- Ratio: 38.9 / 62 ≈ 0.627
+
 ## Implementation
 
 ```swift
