@@ -11,6 +11,7 @@ struct MainView: View {
 
     @State private var showParticles: Bool = false
     @State private var pillLaunching: Bool = false   // text-to-particles launch state
+    @State private var animatedText: String = ""
 
     // Deferred insertion — stored until particles finish
     @State private var pendingTaskTitle: String?
@@ -78,7 +79,7 @@ struct MainView: View {
 
                 // Apple Pay beam animation — sits on top of everything
                 if showParticles {
-                    ApplePayBeamView {
+                    ApplePayBeamView(text: animatedText) {
                         pillLaunching = false   // restore pill to normal state
                         // Insert the item now so it animates in after particles clear
                         if let title = pendingTaskTitle {
@@ -358,6 +359,7 @@ struct MainView: View {
             }
 
             // ── Text-to-particles: collapse pill text first ──
+            animatedText = captured
             pillLaunching = true
             speechManager.transcribedText = ""
 
