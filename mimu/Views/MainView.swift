@@ -22,6 +22,7 @@ struct MainView: View {
     @State private var latestTaskId: UUID?
     @State private var latestEventId: UUID?
     @State private var highlightOpacity: Double = 0
+    @State private var pillFrame: CGRect = .zero
 
     var body: some View {
         NavigationStack {
@@ -74,31 +75,29 @@ struct MainView: View {
                 .navigationTitle("My List")
                 .background(Color(uiColor: .systemGroupedBackground))
 
-                // Floating Bottom Pill
-                bottomPill
-
                 // Apple Pay beam animation — sits on top of everything
                 if showParticles {
-                    ApplePayBeamView(text: animatedText) {
+                    ApplePayBeamView(text: animatedText, pillFrame: pillFrame) {
                         pillLaunching = false   // restore pill to normal state
-                        // Insert the item now so it animates in after particles clear
-                        if let title = pendingTaskTitle {
-                            let task = AppTask(title: title)
-                            withAnimation(.spring(response: 0.52, dampingFraction: 0.76)) {
+                        
+                        // Insert the item smoothly after particles clear
+                        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+                            if let title = pendingTaskTitle {
+                                let task = AppTask(title: title)
                                 modelContext.insert(task)
-                            }
-                            latestTaskId = task.id
-                            pendingTaskTitle = nil
-                        } else if let title = pendingEventTitle, let date = pendingEventDate {
-                            let event = AppEvent(title: title, date: date)
-                            withAnimation(.spring(response: 0.52, dampingFraction: 0.76)) {
+                                latestTaskId = task.id
+                                pendingTaskTitle = nil
+                            } else if let title = pendingEventTitle, let date = pendingEventDate {
+                                let event = AppEvent(title: title, date: date)
                                 modelContext.insert(event)
+                                latestEventId = event.id
+                                pendingEventTitle = nil
+                                pendingEventDate = nil
                             }
-                            latestEventId = event.id
-                            pendingEventTitle = nil
-                            pendingEventDate = nil
                         }
+                        
                         showParticles = false
+                        
                         // Glow highlight on the new row
                         withAnimation(.easeOut(duration: 0.35)) { highlightOpacity = 1.0 }
                         withAnimation(.easeOut(duration: 1.2).delay(0.35)) { highlightOpacity = 0 }
@@ -110,8 +109,26 @@ struct MainView: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                     .transition(.opacity)
+                    .zIndex(1)
                 }
+
+                // Floating Bottom Pill
+                bottomPill
+                    .overlay(
+                        GeometryReader { proxy in
+                            Color.clear
+                                .preference(
+                                    key: PillFramePreferenceKey.self,
+                                    value: proxy.frame(in: .named("root"))
+                                )
+                        }
+                    )
+                    .onPreferenceChange(PillFramePreferenceKey.self) { newFrame in
+                        pillFrame = newFrame
+                    }
+                    .zIndex(2)
             }
+            .coordinateSpace(name: "root")
         }
     }
     
@@ -329,15 +346,14 @@ struct MainView: View {
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(Color(uiColor: .tertiarySystemBackground))
-                .shadow(color: .black.opacity(0.1), radius: 24, x: 0, y: 12)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
         )
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
     }
-
-
-
-    // MARK: - Actions
 
     private func handleRecordingTap() {
         if speechManager.isRecording {
@@ -345,42 +361,41 @@ struct MainView: View {
             let captured = speechManager.transcribedText
             guard !captured.trimmingCharacters(in: .whitespaces).isEmpty else { return }
 
-            // ── Store intent — insertion deferred until particles finish ──
+            // Store data for later insertion
             let intent = mimuEngine.parseIntent(from: captured)
             switch intent {
-            case .task(let title):
-                pendingTaskTitle  = title
-                pendingEventTitle = nil
-                pendingEventDate  = nil
-            case .event(let title, let date):
-                pendingTaskTitle  = nil
-                pendingEventTitle = title
-                pendingEventDate  = date
+            case .task(let title): pendingTaskTitle = title
+            case .event(let title, let date): pendingEventTitle = title; pendingEventDate = date
             }
 
-            // ── Text-to-particles: collapse pill text first ──
+            // 1. Setup Animation State
             animatedText = captured
-            pillLaunching = true
-            speechManager.transcribedText = ""
-
-            // ── Haptics ──
-            UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 1.0)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            
+            // 2. Collapse the text in the pill more smoothly
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                pillLaunching = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.95) {
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-            }
+            
+            // 3. Heavy haptic for "Release"
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
 
-            // ── Fire particle animation after text collapse ──
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {
+            // 4. Start beam with a slightly longer delay to match the smooth collapse
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 showParticles = true
+                speechManager.transcribedText = "" // Clear the field
             }
 
         } else {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             speechManager.startRecording()
         }
+    }
+}
+
+private struct PillFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
     }
 }
 
