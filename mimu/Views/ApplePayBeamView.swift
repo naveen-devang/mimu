@@ -89,7 +89,10 @@ struct ApplePayBeamView: View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
-            let islandY: CGFloat = 37
+            let islandCenterY: CGFloat = 37
+            let islandWidth: CGFloat = 126
+            let islandHeight: CGFloat = 37
+            let topOverscan: CGFloat = 34
             
             // EXACT ALIGNMENT MATH
             let viewOrigin = geo.frame(in: .named("root")).origin
@@ -105,9 +108,9 @@ struct ApplePayBeamView: View {
             let pWidth = isValid ? localPill.width : (w - 40)
             let pMidX = isValid ? localPill.midX : w / 2
             
-            // Anchor the beam to the top edge of the pill.
-            let baseY = isValid ? localPill.minY : (h - 130)
-            let beamHeight = max(baseY - islandY, 0)
+            // Anchor the beam slightly into the pill and run it to the island centerline.
+            let baseY = isValid ? (localPill.minY + 12) : (h - 118)
+            let beamHeight = max(baseY - islandCenterY + topOverscan, 0)
             
             ZStack {
                 // Dimming background
@@ -132,7 +135,7 @@ struct ApplePayBeamView: View {
 
                             // 2. The Shooting Beam
                             ZStack {
-                                TrumpetBeamShape(topWidth: 24, bottomWidth: pWidth * 0.86)
+                                TrumpetBeamShape(topWidth: 28, bottomWidth: pWidth * 0.86)
                                     .fill(
                                         LinearGradient(
                                             colors: [
@@ -145,7 +148,7 @@ struct ApplePayBeamView: View {
                                     )
                                     .blur(radius: 6)
                                 
-                                TrumpetBeamShape(topWidth: 16, bottomWidth: pWidth * 0.68)
+                                TrumpetBeamShape(topWidth: 18, bottomWidth: pWidth * 0.68)
                                     .fill(
                                         LinearGradient(
                                             colors: [
@@ -158,7 +161,7 @@ struct ApplePayBeamView: View {
                                     )
                                     .blur(radius: 3)
 
-                                TrumpetBeamShape(topWidth: 9, bottomWidth: pWidth * 0.48)
+                                TrumpetBeamShape(topWidth: 11, bottomWidth: pWidth * 0.48)
                                     .fill(Color.white.opacity(0.98))
                                     .blur(radius: 1.4)
                             }
@@ -173,19 +176,51 @@ struct ApplePayBeamView: View {
                                     .frame(width: w, height: beamHeight, alignment: .bottom)
                             )
                             .mask(
-                                FlatBaseBeamMask(baseWidth: pWidth - 12, transitionHeight: 28)
+                                FlatBaseBeamMask(baseWidth: pWidth * 0.40, transitionHeight: 66)
                             )
-                            
-                            // 3. Island Impact Glow
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 40, height: 40)
-                                .blur(radius: 15)
-                                .position(x: w / 2, y: islandY)
-                                .opacity(beamLength > 0.9 ? auraOpacity : 0)
-                                .scaleEffect(beamLength)
 
-                            // 4. Flying Text
+                            // 3. Rounded connector so the beam terminates behind the Dynamic Island instead of flat-cutting.
+                            ZStack {
+                                Capsule(style: .continuous)
+                                    .fill(beamPurple.opacity(0.48))
+                                    .frame(width: 48, height: 26)
+                                    .blur(radius: 10)
+
+                                Capsule(style: .continuous)
+                                    .fill(beamBlue.opacity(0.62))
+                                    .frame(width: 30, height: 18)
+                                    .blur(radius: 6)
+
+                                Capsule(style: .continuous)
+                                    .fill(Color.white.opacity(0.98))
+                                    .frame(width: 14, height: 10)
+                                    .blur(radius: 2)
+                            }
+                            .position(x: w / 2, y: islandCenterY + 8)
+                            .opacity(auraOpacity)
+                            
+                            // 4. Island Impact Glow
+                            ZStack {
+                                Capsule(style: .continuous)
+                                    .fill(beamPurple.opacity(0.45))
+                                    .frame(width: islandWidth + 22, height: islandHeight + 18)
+                                    .blur(radius: 16)
+
+                                Capsule(style: .continuous)
+                                    .fill(beamBlue.opacity(0.55))
+                                    .frame(width: islandWidth + 8, height: islandHeight + 10)
+                                    .blur(radius: 10)
+
+                                Capsule(style: .continuous)
+                                    .fill(Color.white.opacity(0.98))
+                                    .frame(width: islandWidth - 22, height: islandHeight - 6)
+                                    .blur(radius: 7)
+                            }
+                            .position(x: w / 2, y: islandCenterY)
+                            .opacity(beamLength > 0.88 ? auraOpacity : 0)
+                            .scaleEffect(0.94 + (beamLength * 0.06))
+
+                            // 5. Flying Text
                             Text(text)
                                 .font(.system(size: 22, weight: .bold, design: .rounded))
                                 .foregroundColor(.white)
