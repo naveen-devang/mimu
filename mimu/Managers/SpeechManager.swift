@@ -1,6 +1,7 @@
 import Foundation
 import Speech
 import AVFoundation
+import Accelerate
 
 @Observable
 final class SpeechManager {
@@ -8,104 +9,176 @@ final class SpeechManager {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
+    /// Tracks whether a tap is currently installed on the input node,
+    /// so tearDown() never calls removeTap when none exists (which crashes).
+    private var tapInstalled = false
+    /// Frame counter for throttling audio level updates to ~15 Hz.
+    private var audioFrameCounter: Int = 0
 
-        var transcribedText: String = ""
-        var isRecording: Bool = false
-        var audioLevel: Float = 0
-        var isAuthorized: Bool = false
+    var transcribedText: String = ""
+    var isRecording: Bool = false
+    var audioLevel: Float = 0
+    var isAuthorized: Bool = false
 
-    init() {
-        requestAuthorization()
-    }
+    init() { }
 
-    private func requestAuthorization() {
-        SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
+    // MARK: - Permissions & Warm-up
+
+    /// Call from MainView.onAppear. Requests permissions and pre-warms the
+    /// audio hardware so every subsequent mic tap is instant.
+    func preparePermissions() {
+        // Speech recognition permission
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
-                self?.isAuthorized = authStatus == .authorized
+                self?.isAuthorized = status == .authorized
             }
         }
+        // Microphone permission (separate OS gate from speech)
+        AVAudioApplication.requestRecordPermission { _ in }
+
+        // Pre-warm the audio engine on the MAIN thread.
+        // AVAudioEngine is not thread-safe — touching it off-main leads to
+        // silent failures. inputNode access + prepare() are the two calls that
+        // carry ~600–800 ms of one-time hardware init cost per app launch.
+        // Doing them here means startRecording() has nothing heavy left to do.
+        DispatchQueue.main.async { [weak self] in
+            self?.warmUpEngine()
+        }
     }
 
+    /// Touches the inputNode (forces iOS audio hardware I/O init) and calls
+    /// prepare() (allocates DSP buffers). Neither requires permissions.
+    private func warmUpEngine() {
+        guard !audioEngine.isRunning else { return }
+        let _ = audioEngine.inputNode   // ~300 ms hardware init, only first call
+        audioEngine.prepare()           // ~300 ms DSP buffer allocation
+    }
+
+    // MARK: - Recording
+
     func startRecording() {
-        guard isAuthorized else { return }
-
-        if let recognitionTask = recognitionTask {
-            recognitionTask.cancel()
-            self.recognitionTask = nil
-        }
-
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("Audio session setup error: \(error.localizedDescription)")
+        guard isAuthorized else {
+            // Permissions not yet granted — request and retry once resolved.
+            SFSpeechRecognizer.requestAuthorization { [weak self] status in
+                DispatchQueue.main.async {
+                    if status == .authorized {
+                        self?.isAuthorized = true
+                        self?.startRecording()
+                    }
+                }
+            }
             return
         }
 
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        // Clean up any previous session before starting a fresh one.
+        tearDown()
 
-        let inputNode = audioEngine.inputNode
-        guard let recognitionRequest = recognitionRequest else {
-            fatalError("Unable to create an SFSpeechAudioBufferRecognitionRequest object")
+        // Set recording flag IMMEDIATELY so the glow animation starts
+        // without waiting for the audio session (which blocks ~200-500 ms).
+        isRecording = true
+        transcribedText = ""
+
+        // Heavy audio session setup on a background queue to avoid
+        // blocking the gesture system ("gesture gate timed out").
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
+            let audioSession = AVAudioSession.sharedInstance()
+            do {
+                try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            } catch {
+                print("Audio session error: \(error.localizedDescription)")
+                DispatchQueue.main.async { self.tearDown() }
+                return
+            }
+
+            // Hop back to main for AVAudioEngine (not thread-safe).
+            DispatchQueue.main.async {
+                self.finishStartRecording()
+            }
         }
+    }
 
+    /// Completes recording setup on the main thread after the audio session
+    /// has been configured in the background.
+    private func finishStartRecording() {
+        guard isRecording else { return }   // tearDown() may have been called
+
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest else { return }
         recognitionRequest.shouldReportPartialResults = true
 
+        let inputNode = audioEngine.inputNode
+
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            guard let self = self else { return }
-
-            var isFinal = false
-            if let result = result {
+            guard let self else { return }
+            if let result {
                 self.transcribedText = result.bestTranscription.formattedString
-                isFinal = result.isFinal
             }
-
-            if error != nil || isFinal {
-                self.audioEngine.stop()
-                inputNode.removeTap(onBus: 0)
-                self.recognitionRequest = nil
-                self.recognitionTask = nil
+            if error != nil || result?.isFinal == true {
+                self.tearDown()
             }
         }
 
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] (buffer, _) in
+        let format = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
 
-            // Compute RMS power from the audio buffer
+            // Throttle UI updates to every 3rd callback (~15 Hz instead of ~44 Hz).
+            guard let self else { return }
+            self.audioFrameCounter += 1
+            guard self.audioFrameCounter % 3 == 0 else { return }
+
             guard let channelData = buffer.floatChannelData?[0] else { return }
-            let frameCount = Int(buffer.frameLength)
-            var rms: Float = 0
-            for i in 0..<frameCount {
-                rms += channelData[i] * channelData[i]
-            }
-            rms = sqrt(rms / Float(frameCount))
-
-            // Map RMS (typically 0.0–0.1+) to a 0.0–1.0 normalized range
-            let normalized = min(rms * 12, 1.0)
-
-            DispatchQueue.main.async {
-                self?.audioLevel = normalized
-            }
+            let count = Int(buffer.frameLength)
+            // vDSP SIMD-vectorised RMS — guaranteed fast on Apple Silicon.
+            var meanSquare: Float = 0
+            vDSP_measqv(channelData, 1, &meanSquare, vDSP_Length(count))
+            let level = min(sqrt(meanSquare) * 12, 1.0)
+            DispatchQueue.main.async { self.audioLevel = level }
         }
+        tapInstalled = true
 
+        // prepare() is a no-op if already prepared by warmUpEngine() — fast path.
         audioEngine.prepare()
-
         do {
             try audioEngine.start()
-            isRecording = true
-            transcribedText = ""
         } catch {
             print("Audio engine start error: \(error.localizedDescription)")
+            tearDown()
         }
     }
 
     func stopRecording() {
+        recognitionRequest?.endAudio()
+        tearDown()
+    }
+
+    // MARK: - Teardown
+
+    private func tearDown() {
         if audioEngine.isRunning {
             audioEngine.stop()
-            recognitionRequest?.endAudio()
-            isRecording = false
+        }
+        // Only remove the tap if we know one is installed — avoids an exception.
+        if tapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        isRecording = false
+        audioLevel = 0
+        audioFrameCounter = 0
+
+        // Deactivate the audio session so the mic hardware powers down
+        // and the recording indicator disappears from the status bar.
+        DispatchQueue.global(qos: .utility).async {
+            try? AVAudioSession.sharedInstance().setActive(
+                false, options: .notifyOthersOnDeactivation
+            )
         }
     }
 }

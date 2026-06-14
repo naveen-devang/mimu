@@ -8,6 +8,11 @@ enum ParsedIntent {
 
 final class MimuEngine {
     
+    /// Cached date detector — NSDataDetector is thread-safe and reusable.
+    private let dateDetector: NSDataDetector? = {
+        try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
+    }()
+    
     /// Parses the transcribed text and returns either a AppTask or AppEvent structure intent
     func parseIntent(from text: String) -> ParsedIntent {
         let textToAnalyze = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -29,19 +34,15 @@ final class MimuEngine {
         return .task(title: textToAnalyze)
     }
     
-    /// Use NSDataDetector (Data Detection) for robust extraction of dates and time
+    /// Use the cached NSDataDetector for robust extraction of dates and time
     private func extractDate(from text: String) -> Date? {
-        do {
-            let detector = try NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
-            let matches = detector.matches(in: text, options: [], range: NSRange(location: 0, length: text.utf16.count))
-            
-            for match in matches {
-                if let date = match.date {
-                    return date // Return the first detected valid date/time
-                }
+        guard let detector = dateDetector else { return nil }
+        let matches = detector.matches(in: text, options: [], range: NSRange(location: 0, length: text.utf16.count))
+        
+        for match in matches {
+            if let date = match.date {
+                return date // Return the first detected valid date/time
             }
-        } catch {
-            print("NSDataDetector error: \(error.localizedDescription)")
         }
         return nil
     }

@@ -1,7 +1,10 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct MainView: View {
+    // Cached haptic generator — avoids re-creating the Taptic Engine link on every tap.
+    private static let haptic = UIImpactFeedbackGenerator(style: .medium)
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AppTask.createdAt, order: .reverse) private var tasks: [AppTask]
     @Query(sort: \AppEvent.createdAt, order: .reverse) private var events: [AppEvent]
@@ -9,20 +12,16 @@ struct MainView: View {
     @State private var speechManager = SpeechManager()
     @State private var mimuEngine = MimuEngine()
 
-    @State private var showParticles: Bool = false
-    @State private var pillLaunching: Bool = false   // text-to-particles launch state
-    @State private var animatedText: String = ""
 
-    // Deferred insertion — stored until particles finish
-    @State private var pendingTaskTitle: String?
-    @State private var pendingEventTitle: String?
-    @State private var pendingEventDate: Date?
+
+    // Glow visibility — separate from isRecording so the fade-out can finish
+    // before the view is removed from the hierarchy.
+    @State private var isGlowVisible = false
 
     // Highlight glow for newly added row
     @State private var latestTaskId: UUID?
     @State private var latestEventId: UUID?
     @State private var highlightOpacity: Double = 0
-    @State private var pillFrame: CGRect = .zero
 
     var body: some View {
         NavigationStack {
@@ -75,60 +74,37 @@ struct MainView: View {
                 .navigationTitle("My List")
                 .background(Color(uiColor: .systemGroupedBackground))
 
-                // Apple Pay beam animation — sits on top of everything
-                if showParticles {
-                    ApplePayBeamView(text: animatedText, pillFrame: pillFrame) {
-                        pillLaunching = false   // restore pill to normal state
-                        
-                        // Insert the item smoothly after particles clear
-                        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
-                            if let title = pendingTaskTitle {
-                                let task = AppTask(title: title)
-                                modelContext.insert(task)
-                                latestTaskId = task.id
-                                pendingTaskTitle = nil
-                            } else if let title = pendingEventTitle, let date = pendingEventDate {
-                                let event = AppEvent(title: title, date: date)
-                                modelContext.insert(event)
-                                latestEventId = event.id
-                                pendingEventTitle = nil
-                                pendingEventDate = nil
-                            }
-                        }
-                        
-                        showParticles = false
-                        
-                        // Glow highlight on the new row
-                        withAnimation(.easeOut(duration: 0.35)) { highlightOpacity = 1.0 }
-                        withAnimation(.easeOut(duration: 1.2).delay(0.35)) { highlightOpacity = 0 }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            latestTaskId = nil
-                            latestEventId = nil
-                        }
-                    }
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-                    .zIndex(1)
+                // Siri glow — only in the hierarchy while recording or fading out.
+                // Removing it when idle eliminates all GPU blur work at idle.
+                if isGlowVisible {
+                    SiriGlowView(isActive: speechManager.isRecording)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .zIndex(1)
                 }
 
                 // Floating Bottom Pill
                 bottomPill
-                    .overlay(
-                        GeometryReader { proxy in
-                            Color.clear
-                                .preference(
-                                    key: PillFramePreferenceKey.self,
-                                    value: proxy.frame(in: .named("root"))
-                                )
-                        }
-                    )
-                    .onPreferenceChange(PillFramePreferenceKey.self) { newFrame in
-                        pillFrame = newFrame
-                    }
                     .zIndex(2)
             }
             .coordinateSpace(name: "root")
+        }
+        .onAppear {
+            // Delay warmup by 1 s so it doesn't race with the initial layout
+            // pass and gesture recognizer setup (fixes gesture gate timeout).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                speechManager.preparePermissions()
+            }
+        }
+        .onChange(of: speechManager.isRecording) { _, isRecording in
+            if isRecording {
+                isGlowVisible = true
+            } else {
+                // Keep alive long enough for the 0.5 s fade-out to complete.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    isGlowVisible = false
+                }
+            }
         }
     }
     
@@ -180,29 +156,25 @@ struct MainView: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 8, y: 4)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.40, green: 0.70, blue: 1.00)
-                                .opacity(task.id == latestTaskId ? highlightOpacity : 0),
-                            Color(red: 0.60, green: 0.38, blue: 1.00)
-                                .opacity(task.id == latestTaskId ? highlightOpacity : 0)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.8
-                )
-        )
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) {
-                withAnimation { modelContext.delete(task) }
-            } label: {
-                Label("Delete", systemImage: "trash")
+        .overlay {
+            if task.id == latestTaskId {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.40, green: 0.70, blue: 1.00)
+                                    .opacity(highlightOpacity),
+                                Color(red: 0.60, green: 0.38, blue: 1.00)
+                                    .opacity(highlightOpacity)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.8
+                    )
             }
         }
+
     }
 
     private func eventRow(_ event: AppEvent) -> some View {
@@ -250,29 +222,25 @@ struct MainView: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 8, y: 4)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.30, green: 0.60, blue: 1.00)
-                                .opacity(event.id == latestEventId ? highlightOpacity : 0),
-                            Color(red: 0.50, green: 0.35, blue: 1.00)
-                                .opacity(event.id == latestEventId ? highlightOpacity : 0)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.8
-                )
-        )
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) {
-                withAnimation { modelContext.delete(event) }
-            } label: {
-                Label("Delete", systemImage: "trash")
+        .overlay {
+            if event.id == latestEventId {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.30, green: 0.60, blue: 1.00)
+                                    .opacity(highlightOpacity),
+                                Color(red: 0.50, green: 0.35, blue: 1.00)
+                                    .opacity(highlightOpacity)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.8
+                    )
             }
         }
+
     }
 
     private var emptyStateView: some View {
@@ -320,11 +288,6 @@ struct MainView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(2)
                 .animation(.easeInOut(duration: 0.2), value: speechManager.transcribedText)
-                // Text compresses toward the send button and dissolves as particles launch
-                .scaleEffect(pillLaunching ? 0.01 : 1.0, anchor: .trailing)
-                .offset(x: pillLaunching ? 40 : 0, y: pillLaunching ? -8 : 0)
-                .opacity(pillLaunching ? 0 : 1.0)
-                .animation(.easeIn(duration: 0.14), value: pillLaunching)
 
             // Right: mic to start recording, send button to submit
             Button(action: handleRecordingTap) {
@@ -357,47 +320,46 @@ struct MainView: View {
 
     private func handleRecordingTap() {
         if speechManager.isRecording {
+            // Stop recording — glow fades out automatically via isRecording binding
             speechManager.stopRecording()
             let captured = speechManager.transcribedText
+            speechManager.transcribedText = ""
             guard !captured.trimmingCharacters(in: .whitespaces).isEmpty else { return }
 
-            // Store data for later insertion
+            // Parse and insert immediately
             let intent = mimuEngine.parseIntent(from: captured)
-            switch intent {
-            case .task(let title): pendingTaskTitle = title
-            case .event(let title, let date): pendingEventTitle = title; pendingEventDate = date
+            Self.haptic.impactOccurred()
+
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+                switch intent {
+                case .task(let title):
+                    let task = AppTask(title: title)
+                    modelContext.insert(task)
+                    latestTaskId = task.id
+                case .event(let title, let date):
+                    let event = AppEvent(title: title, date: date)
+                    modelContext.insert(event)
+                    latestEventId = event.id
+                }
             }
 
-            // 1. Setup Animation State
-            animatedText = captured
-            
-            // 2. Collapse the text in the pill more smoothly
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                pillLaunching = true
-            }
-            
-            // 3. Heavy haptic for "Release"
-            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-
-            // 4. Start beam with a slightly longer delay to match the smooth collapse
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                showParticles = true
-                speechManager.transcribedText = "" // Clear the field
+            // Row highlight flash
+            withAnimation(.easeOut(duration: 0.35)) { highlightOpacity = 1.0 }
+            withAnimation(.easeOut(duration: 1.2).delay(0.35)) { highlightOpacity = 0 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                latestTaskId = nil
+                latestEventId = nil
             }
 
         } else {
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            // Start recording — glow fires automatically via isRecording binding
+            Self.haptic.impactOccurred()
             speechManager.startRecording()
         }
     }
 }
 
-private struct PillFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
-    }
-}
+
 
 #Preview {
     MainView()
