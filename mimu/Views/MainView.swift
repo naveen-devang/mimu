@@ -11,8 +11,8 @@ struct MainView: View {
     
     @State private var speechManager = SpeechManager()
     @State private var mimuEngine = MimuEngine()
-
-
+    @AppStorage("selectedTheme") private var selectedTheme: AppTheme = .bubblegum
+    @State private var isSettingsPresented = false
 
     // Glow visibility — separate from isRecording so the fade-out can finish
     // before the view is removed from the hierarchy.
@@ -26,13 +26,53 @@ struct MainView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
+                // Background color matching current pastel theme
+                selectedTheme.backgroundColor
+                    .ignoresSafeArea()
+
                 // Main content area
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         
+                        // Cute Custom Header
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Hello, Sweet Friend! ✨")
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .fontWeight(.bold)
+                                    .foregroundColor(selectedTheme.textSecondaryColor)
+                                Text("My Cozy List")
+                                    .font(.system(.largeTitle, design: .rounded))
+                                    .fontWeight(.black)
+                                    .foregroundColor(selectedTheme.textColor)
+                            }
+                            
+                            Spacer()
+                            
+                            Button(action: {
+                                isSettingsPresented = true
+                                Self.haptic.impactOccurred()
+                            }) {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(selectedTheme.accentColor)
+                                    .padding(12)
+                                    .background(selectedTheme.cardColor)
+                                    .clipShape(Circle())
+                                    .shadow(color: Color.black.opacity(0.04), radius: 6, y: 3)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(selectedTheme.secondaryColor.opacity(0.3), lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 12)
+                        
                         // Tasks Section
                         if !tasks.isEmpty {
-                            sectionHeader(title: "Tasks", icon: "checklist")
+                            sectionHeader(title: "Tasks", icon: "checkmark.bubble.fill")
                             
                             VStack(spacing: 12) {
                                 ForEach(tasks) { task in
@@ -48,7 +88,7 @@ struct MainView: View {
                         
                         // Events Section
                         if !events.isEmpty {
-                            sectionHeader(title: "Upcoming Events", icon: "calendar")
+                            sectionHeader(title: "Upcoming Events", icon: "calendar.badge.clock")
                                 .padding(.top, tasks.isEmpty ? 0 : 16)
                             
                             VStack(spacing: 12) {
@@ -71,8 +111,6 @@ struct MainView: View {
                     .padding()
                     .padding(.bottom, 120) // Extra padding for the floating pill
                 }
-                .navigationTitle("My List")
-                .background(Color(uiColor: .systemGroupedBackground))
 
                 // Siri glow — only in the hierarchy while recording or fading out.
                 // Removing it when idle eliminates all GPU blur work at idle.
@@ -88,6 +126,10 @@ struct MainView: View {
                     .zIndex(2)
             }
             .coordinateSpace(name: "root")
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $isSettingsPresented) {
+                SettingsView()
+            }
         }
         .onAppear {
             // Delay warmup by 1 s so it doesn't race with the initial layout
@@ -113,12 +155,14 @@ struct MainView: View {
     private func sectionHeader(title: String, icon: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(selectedTheme.accentColor)
+                .font(.system(size: 16, weight: .bold))
             Text(title)
-                .font(.headline)
-                .foregroundStyle(.secondary)
+                .font(.system(.headline, design: .rounded))
+                .fontWeight(.bold)
+                .foregroundStyle(selectedTheme.textColor)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 6)
     }
     
     private func taskRow(_ task: AppTask) -> some View {
@@ -127,83 +171,88 @@ struct MainView: View {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     task.isCompleted.toggle()
                 }
+                Self.haptic.impactOccurred()
             }) {
                 Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
                     .resizable()
                     .frame(width: 24, height: 24)
-                    .foregroundColor(task.isCompleted ? .green : .secondary)
+                    .foregroundColor(task.isCompleted ? selectedTheme.accentColor : selectedTheme.textColor.opacity(0.3))
             }
             .buttonStyle(.plain)
 
             Text(task.title)
                 .font(.system(.body, design: .rounded))
-                .strikethrough(task.isCompleted, color: .secondary)
-                .foregroundColor(task.isCompleted ? .secondary : .primary)
+                .fontWeight(.medium)
+                .strikethrough(task.isCompleted, color: selectedTheme.textColor.opacity(0.4))
+                .foregroundColor(task.isCompleted ? selectedTheme.textColor.opacity(0.5) : selectedTheme.textColor)
 
             Spacer()
 
             // Delete button
             Button(action: {
                 withAnimation { modelContext.delete(task) }
+                Self.haptic.impactOccurred()
             }) {
-                Image(systemName: "trash")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.red.opacity(0.7))
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(selectedTheme.accentColor.opacity(0.7))
             }
             .buttonStyle(.plain)
         }
         .padding(16)
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 4)
+        .background(selectedTheme.cardColor)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: Color.black.opacity(0.02), radius: 6, y: 3)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(selectedTheme.secondaryColor.opacity(0.2), lineWidth: 1.5)
+        )
         .overlay {
             if task.id == latestTaskId {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .stroke(
                         LinearGradient(
                             colors: [
-                                Color(red: 0.40, green: 0.70, blue: 1.00)
-                                    .opacity(highlightOpacity),
-                                Color(red: 0.60, green: 0.38, blue: 1.00)
-                                    .opacity(highlightOpacity)
+                                selectedTheme.accentColor.opacity(highlightOpacity),
+                                selectedTheme.secondaryColor.opacity(highlightOpacity)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: 1.8
+                        lineWidth: 2.0
                     )
             }
         }
-
     }
 
     private func eventRow(_ event: AppEvent) -> some View {
         HStack(spacing: 16) {
             ZStack {
                 Rectangle()
-                    .fill(Color.blue.opacity(0.1))
+                    .fill(selectedTheme.accentColor.opacity(0.12))
                     .frame(width: 48, height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 VStack(spacing: 2) {
                     Text(event.date, format: .dateTime.month())
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.blue)
+                        .font(.system(size: 10, weight: .black, design: .rounded))
+                        .foregroundStyle(selectedTheme.accentColor)
                         .textCase(.uppercase)
                     Text(event.date, format: .dateTime.day())
-                        .font(.system(size: 16, weight: .medium, design: .rounded))
-                        .foregroundStyle(.blue)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(selectedTheme.accentColor)
                 }
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(event.title)
                     .font(.system(.body, design: .rounded))
-                    .fontWeight(.medium)
+                    .fontWeight(.bold)
+                    .foregroundColor(selectedTheme.textColor)
 
                 Text(event.date, style: .time)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(selectedTheme.textSecondaryColor)
             }
 
             Spacer()
@@ -211,59 +260,70 @@ struct MainView: View {
             // Delete button
             Button(action: {
                 withAnimation { modelContext.delete(event) }
+                Self.haptic.impactOccurred()
             }) {
-                Image(systemName: "trash")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.red.opacity(0.7))
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(selectedTheme.accentColor.opacity(0.7))
             }
             .buttonStyle(.plain)
         }
         .padding(12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 4)
+        .background(selectedTheme.cardColor)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: Color.black.opacity(0.02), radius: 6, y: 3)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(selectedTheme.secondaryColor.opacity(0.2), lineWidth: 1.5)
+        )
         .overlay {
             if event.id == latestEventId {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .stroke(
                         LinearGradient(
                             colors: [
-                                Color(red: 0.30, green: 0.60, blue: 1.00)
-                                    .opacity(highlightOpacity),
-                                Color(red: 0.50, green: 0.35, blue: 1.00)
-                                    .opacity(highlightOpacity)
+                                selectedTheme.accentColor.opacity(highlightOpacity),
+                                selectedTheme.secondaryColor.opacity(highlightOpacity)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: 1.8
+                        lineWidth: 2.0
                     )
             }
         }
-
     }
 
     private var emptyStateView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .fill(selectedTheme.accentColor.opacity(0.1))
+                    .frame(width: 80, height: 80)
+                
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(selectedTheme.accentColor)
+            }
             
-            Text("No tasks or events yet")
-                .font(.title3.bold())
+            Text("Your List is Empty ✨")
+                .font(.system(.title3, design: .rounded))
+                .fontWeight(.bold)
+                .foregroundColor(selectedTheme.textColor)
             
-            Text("Tap the microphone below and say what you need to get done. Mimu will sort it for you.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+            Text("Tap the mic below and speak your goals! Mimu will automatically categorize your tasks & events. 🌸")
+                .font(.system(.body, design: .rounded))
+                .foregroundColor(selectedTheme.textSecondaryColor)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+                .lineSpacing(4)
         }
-        .padding(.top, 80)
+        .padding(.top, 60)
         .frame(maxWidth: .infinity)
     }
     
     private var bottomPill: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             // Left: waveform when recording, mic icon when idle
             Group {
                 if speechManager.isRecording {
@@ -271,9 +331,9 @@ struct MainView: View {
                         .frame(width: 36, height: 28)
                         .transition(.opacity.combined(with: .scale))
                 } else {
-                    Image(systemName: "mic")
+                    Image(systemName: "sparkles")
                         .font(.system(size: 18))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(selectedTheme.accentColor)
                         .transition(.opacity.combined(with: .scale))
                 }
             }
@@ -282,9 +342,10 @@ struct MainView: View {
             // Middle: live transcription while recording, placeholder when idle
             Text(speechManager.isRecording && !speechManager.transcribedText.isEmpty
                  ? speechManager.transcribedText
-                 : "Say a task or event...")
-                .font(.system(size: 16, weight: .regular))
-                .foregroundColor(speechManager.isRecording && !speechManager.transcribedText.isEmpty ? .primary : .secondary)
+                 : "Speak a task or event...")
+                .font(.system(size: 15, design: .rounded))
+                .fontWeight(.medium)
+                .foregroundColor(speechManager.isRecording && !speechManager.transcribedText.isEmpty ? selectedTheme.textColor : selectedTheme.textSecondaryColor.opacity(0.7))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(2)
                 .animation(.easeInOut(duration: 0.2), value: speechManager.transcribedText)
@@ -293,12 +354,12 @@ struct MainView: View {
             Button(action: handleRecordingTap) {
                 ZStack {
                     Circle()
-                        .fill(speechManager.isRecording ? Color.blue : Color(uiColor: .tertiarySystemFill))
+                        .fill(speechManager.isRecording ? selectedTheme.accentColor : selectedTheme.secondaryColor.opacity(0.4))
                         .frame(width: 44, height: 44)
 
                     Image(systemName: speechManager.isRecording ? "arrow.up" : "mic.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(speechManager.isRecording ? .white : .primary)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(speechManager.isRecording ? .white : selectedTheme.textColor)
                 }
             }
             .buttonStyle(.plain)
@@ -308,11 +369,11 @@ struct MainView: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color(uiColor: .tertiarySystemBackground))
+                .fill(selectedTheme.cardColor)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                .stroke(selectedTheme.accentColor.opacity(0.25), lineWidth: 2)
         )
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
