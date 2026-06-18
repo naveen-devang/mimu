@@ -18,6 +18,7 @@ struct MainView: View {
     @State private var latestTaskId: UUID?
     @State private var latestEventId: UUID?
     @State private var highlightOpacity: Double = 0
+    @State private var scrollOffset: CGFloat = 0
 
     var body: some View {
         NavigationStack {
@@ -107,15 +108,25 @@ struct MainView: View {
                     .padding()
                     .padding(.bottom, 120) // Extra padding for the floating pill
                 }
-
-                // Floating Bottom Pill
-                bottomPill
-                    .zIndex(2)
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { oldValue, newValue in
+                    scrollOffset = newValue
+                }
             }
             .coordinateSpace(name: "root")
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $isSettingsPresented) {
                 SettingsView()
+            }
+            .overlay(alignment: .top) {
+                progressiveTopBlur
+            }
+            .overlay(alignment: .bottom) {
+                ZStack(alignment: .bottom) {
+                    progressiveBottomBlur
+                    bottomPill
+                }
             }
         }
         .onAppear {
@@ -394,10 +405,56 @@ struct MainView: View {
             }
 
         } else {
-            // Start recording — glow fires automatically via isRecording binding
+            // Start recording
             Self.haptic.impactOccurred()
             speechManager.startRecording()
         }
+    }
+    
+    // MARK: - Progressive Top Blur Helpers
+    
+    private var topBlurOpacity: Double {
+        let threshold: CGFloat = 30
+        return Double(min(max(scrollOffset, 0) / threshold, 1.0))
+    }
+    
+    private var progressiveTopBlur: some View {
+        VariableBlurView(maxBlurRadius: 15, direction: .blurredTopClearBottom, startOffset: 0.15)
+            .frame(height: 110) // Covers safe area + provides a wide, gradual fade zone
+            .overlay {
+                // A very subtle glassy sheen that fades out completely at the bottom of the blur.
+                // Uses a constant white color for the best pastel match under any OS mode.
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.35),
+                        Color.white.opacity(0.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .ignoresSafeArea(edges: .top)
+            .opacity(topBlurOpacity)
+            .allowsHitTesting(false) // Let touches pass through
+    }
+    
+    private var progressiveBottomBlur: some View {
+        VariableBlurView(maxBlurRadius: 15, direction: .blurredBottomClearTop, startOffset: 0.15)
+            .frame(height: 140) // Covers safe area + floating pill + gradual fade zone
+            .overlay {
+                // Subtle glassy sheen that fades out completely at the top of the blur.
+                // Uses a constant white color for the best pastel match under any OS mode.
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.0),
+                        Color.white.opacity(0.35)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false) // Let touches pass through
     }
 }
 
