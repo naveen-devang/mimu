@@ -1,8 +1,10 @@
 import SwiftUI
+import UserNotifications
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("selectedTheme") private var selectedTheme: AppTheme = .bubblegum
+    @State private var authorizationStatus: UNAuthorizationStatus = .notDetermined
     
     var body: some View {
         NavigationStack {
@@ -87,6 +89,79 @@ struct SettingsView: View {
                             }
                         }
                         
+                        // Notifications section header
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Notifications Settings")
+                                .font(.system(.title3, design: .rounded))
+                                .fontWeight(.bold)
+                                .foregroundColor(selectedTheme.textColor)
+                            
+                            Text("Manage alerts for tasks and events scheduled at a specific time. ⏰")
+                                .font(.system(.subheadline, design: .rounded))
+                                .foregroundColor(selectedTheme.textSecondaryColor)
+                                .lineSpacing(4)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 16)
+                        
+                        // Notifications Status Card
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack(spacing: 16) {
+                                ZStack {
+                                    Circle()
+                                        .fill(selectedTheme.accentColor.opacity(0.12))
+                                        .frame(width: 44, height: 44)
+                                    Image(systemName: "bell.fill")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(selectedTheme.accentColor)
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Event Reminders")
+                                        .font(.system(.body, design: .rounded))
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(selectedTheme.textColor)
+                                    
+                                    Text(notificationStatusText)
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .foregroundColor(selectedTheme.textSecondaryColor)
+                                }
+                                
+                                Spacer()
+                                
+                                if authorizationStatus == .authorized || authorizationStatus == .provisional {
+                                    Text("Active ✨")
+                                        .font(.system(.subheadline, design: .rounded))
+                                        .fontWeight(.bold)
+                                        .foregroundColor(selectedTheme.accentColor)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(selectedTheme.accentColor.opacity(0.1))
+                                        .clipShape(Capsule())
+                                } else {
+                                    Button(action: handleNotificationSettingsTap) {
+                                        Text(authorizationStatus == .denied ? "Fix in Settings ⚙️" : "Enable Alerts 🔔")
+                                            .font(.system(.subheadline, design: .rounded))
+                                            .fontWeight(.bold)
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 10)
+                                            .background(selectedTheme.accentColor)
+                                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .padding(20)
+                        .background(selectedTheme.cardColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .shadow(color: Color.black.opacity(0.03), radius: 6, y: 3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .stroke(selectedTheme.secondaryColor.opacity(0.2), lineWidth: 1.5)
+                        )
+                        
                         // Small footer info
                         HStack {
                             Spacer()
@@ -116,6 +191,51 @@ struct SettingsView: View {
                     .fontWeight(.bold)
                     .foregroundColor(selectedTheme.accentColor)
                 }
+            }
+            .onAppear {
+                refreshNotificationStatus()
+            }
+        }
+    }
+    
+    // MARK: - Notifications Helpers
+    
+    private var notificationStatusText: String {
+        switch authorizationStatus {
+        case .authorized, .provisional:
+            return "You will receive alerts at the event time."
+        case .denied:
+            return "Alerts are blocked in system settings."
+        case .notDetermined:
+            return "Tap to authorize cozy reminders."
+        case .ephemeral:
+            return "Temporary alerts are active."
+        @unknown default:
+            return "Unknown permission state."
+        }
+    }
+    
+    private func refreshNotificationStatus() {
+        NotificationManager.shared.getAuthorizationStatus { status in
+            DispatchQueue.main.async {
+                self.authorizationStatus = status
+            }
+        }
+    }
+    
+    private func handleNotificationSettingsTap() {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+        
+        if authorizationStatus == .denied {
+            // Open system settings page
+            if let settingsUrl = URL(string: UIApplication.openSettingsURLString),
+               UIApplication.shared.canOpenURL(settingsUrl) {
+                UIApplication.shared.open(settingsUrl)
+            }
+        } else {
+            NotificationManager.shared.requestAuthorization { granted in
+                self.refreshNotificationStatus()
             }
         }
     }

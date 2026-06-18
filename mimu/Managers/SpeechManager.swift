@@ -36,22 +36,19 @@ final class SpeechManager {
         // Microphone permission (separate OS gate from speech)
         AVAudioApplication.requestRecordPermission { _ in }
 
-        // Pre-warm the audio engine on the MAIN thread.
-        // AVAudioEngine is not thread-safe — touching it off-main leads to
-        // silent failures. inputNode access + prepare() are the two calls that
-        // carry ~600–800 ms of one-time hardware init cost per app launch.
-        // Doing them here means startRecording() has nothing heavy left to do.
-        DispatchQueue.main.async { [weak self] in
-            self?.warmUpEngine()
-        }
+        // Pre-warm the audio engine off-main to prevent startup hangs.
+        warmUpEngine()
     }
 
     /// Touches the inputNode (forces iOS audio hardware I/O init) and calls
-    /// prepare() (allocates DSP buffers). Neither requires permissions.
+    /// prepare() (allocates DSP buffers) on a background thread.
     private func warmUpEngine() {
-        guard !audioEngine.isRunning else { return }
-        let _ = audioEngine.inputNode   // ~300 ms hardware init, only first call
-        audioEngine.prepare()           // ~300 ms DSP buffer allocation
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            guard !self.audioEngine.isRunning else { return }
+            let _ = self.audioEngine.inputNode   // ~300 ms hardware init, only first call
+            self.audioEngine.prepare()           // ~300 ms DSP buffer allocation
+        }
     }
 
     // MARK: - Recording
@@ -121,8 +118,26 @@ final class SpeechManager {
             }
         }
 
-        let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        // inputNode.outputFormat(forBus:) can return a zero-sampleRate / zero-channel
+        // format if the audio session hasn't fully activated the hardware yet (common
+        // in the Simulator and on first cold-start). Passing that invalid format to
+        // installTap throws kAudioUnitErr_InvalidFormat (error 561015905) and crashes.
+        // We validate here and fall back to a known-good format.
+        let rawFormat = inputNode.outputFormat(forBus: 0)
+        let tapFormat: AVAudioFormat
+        if rawFormat.sampleRate > 0 && rawFormat.channelCount > 0 {
+            tapFormat = rawFormat
+        } else {
+            // Safe default: 44.1 kHz mono — Speech framework and AudioUnit both accept this.
+            guard let fallback = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1) else {
+                print("SpeechManager: Could not create fallback audio format — aborting.")
+                tearDown()
+                return
+            }
+            tapFormat = fallback
+        }
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
 
             // Throttle UI updates to every 3rd callback (~15 Hz instead of ~44 Hz).

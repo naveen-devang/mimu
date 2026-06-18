@@ -14,10 +14,6 @@ struct MainView: View {
     @AppStorage("selectedTheme") private var selectedTheme: AppTheme = .bubblegum
     @State private var isSettingsPresented = false
 
-    // Glow visibility — separate from isRecording so the fade-out can finish
-    // before the view is removed from the hierarchy.
-    @State private var isGlowVisible = false
-
     // Highlight glow for newly added row
     @State private var latestTaskId: UUID?
     @State private var latestEventId: UUID?
@@ -112,15 +108,6 @@ struct MainView: View {
                     .padding(.bottom, 120) // Extra padding for the floating pill
                 }
 
-                // Siri glow — only in the hierarchy while recording or fading out.
-                // Removing it when idle eliminates all GPU blur work at idle.
-                if isGlowVisible {
-                    SiriGlowView(isActive: speechManager.isRecording)
-                        .ignoresSafeArea()
-                        .transition(.opacity)
-                        .zIndex(1)
-                }
-
                 // Floating Bottom Pill
                 bottomPill
                     .zIndex(2)
@@ -136,18 +123,10 @@ struct MainView: View {
             // pass and gesture recognizer setup (fixes gesture gate timeout).
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 speechManager.preparePermissions()
+                NotificationManager.shared.requestAuthorization()
             }
         }
-        .onChange(of: speechManager.isRecording) { _, isRecording in
-            if isRecording {
-                isGlowVisible = true
-            } else {
-                // Keep alive long enough for the 0.5 s fade-out to complete.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    isGlowVisible = false
-                }
-            }
-        }
+
     }
     
     // MARK: - Subviews
@@ -259,6 +238,7 @@ struct MainView: View {
 
             // Delete button
             Button(action: {
+                NotificationManager.shared.cancelNotification(for: event)
                 withAnimation { modelContext.delete(event) }
                 Self.haptic.impactOccurred()
             }) {
@@ -400,6 +380,7 @@ struct MainView: View {
                 case .event(let title, let date):
                     let event = AppEvent(title: title, date: date)
                     modelContext.insert(event)
+                    NotificationManager.shared.scheduleNotification(for: event)
                     latestEventId = event.id
                 }
             }

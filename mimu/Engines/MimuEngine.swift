@@ -1,5 +1,4 @@
 import Foundation
-import NaturalLanguage
 
 enum ParsedIntent {
     case task(title: String)
@@ -25,9 +24,9 @@ final class MimuEngine {
             return .event(title: textToAnalyze, date: eventDate)
         }
         
-        // NaturalLanguage framework logic fallback
-        if hasEventIntentUsingNLP(textToAnalyze) {
-            // Even if we couldn't parse the time, if NL says it's an event...
+        // High-performance word boundary keyword check
+        if hasEventIntent(textToAnalyze) {
+            // Even if we couldn't parse the time, if keywords say it's an event...
             return .event(title: textToAnalyze, date: Date().addingTimeInterval(3600)) // fallback +1 hr
         }
         
@@ -47,27 +46,20 @@ final class MimuEngine {
         return nil
     }
     
-    /// Logic-based Natural Language processing to classify intention
-    private func hasEventIntentUsingNLP(_ text: String) -> Bool {
-        let tagger = NLTagger(tagSchemes: [.lexicalClass])
-        tagger.string = text
-        var isEvent = false
+    /// High-performance keyword check to classify intention.
+    /// Replaces NLTagger to prevent heavy framework loading and main thread hangs.
+    private func hasEventIntent(_ text: String) -> Bool {
+        // Words indicating calendar/event intent
+        let eventIndicators: Set<String> = ["meet", "meeting", "call", "send", "appointment", "schedule", "scheduled"]
         
-        let options: NLTagger.Options = [.omitWhitespace, .omitPunctuation]
-        
-        // Verbs that usually determine an event (meetings, sending, calling at a time)
-        let eventIndicators: Set<String> = ["meet", "call", "send", "appointment", "schedule"]
-        
-        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lexicalClass, options: options) { tag, tokenRange in
-            if let _ = tag {
-                let word = String(text[tokenRange]).lowercased()
-                if eventIndicators.contains(word) {
-                    isEvent = true
-                }
+        // Tokenize using simple word boundaries (alphanumerics only)
+        let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+        for word in words {
+            if eventIndicators.contains(word) {
+                return true
             }
-            return !isEvent // stop early if found
         }
         
-        return isEvent
+        return false
     }
 }
